@@ -382,7 +382,7 @@ public class SecureBulkLoadEndpoint extends SecureBulkLoadService
       }
 
       // Check to see if the source and target filesystems are the same
-      if (!FSHDFSUtils.isSameHdfs(conf, srcFs, fs)) {
+      if (!FSHDFSUtils.isCoercibleToHdfs(conf, srcFs, fs)) {
         LOG.debug("Bulk-load file " + srcPath + " is on different filesystem than " +
             "the destination filesystem. Copying file over to destination staging dir.");
         FileUtil.copy(srcFs, p, fs, stageP, false, conf);
@@ -390,7 +390,7 @@ public class SecureBulkLoadEndpoint extends SecureBulkLoadService
         LOG.debug("Moving " + p + " to " + stageP);
         FileStatus origFileStatus = fs.getFileStatus(p);
         origPermissions.put(srcPath, origFileStatus.getPermission());
-        if(!fs.rename(p, stageP)) {
+        if(!fs.rename(FSHDFSUtils.coerce(p, fs), stageP)) {
           throw new IOException("Failed to move HFile: " + p + " to " + stageP);
         }
       }

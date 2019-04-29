@@ -17,7 +17,11 @@
  */
 package org.apache.hadoop.hbase.util;
 
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertThat;
 import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
 
 import java.io.IOException;
 
@@ -29,7 +33,9 @@ import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hbase.HBaseConfiguration;
 import org.apache.hadoop.hbase.HBaseTestingUtility;
 import org.apache.hadoop.hbase.testclassification.MediumTests;
+import org.apache.hadoop.hdfs.DFSUtil;
 import org.apache.hadoop.hdfs.DistributedFileSystem;
+import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.experimental.categories.Category;
@@ -97,6 +103,90 @@ public class TestFSHDFSUtils {
     assertTrue(this.fsHDFSUtils.recoverDFSFileLease(dfs, FILE, HTU.getConfiguration(), reporter));
     Mockito.verify(dfs, Mockito.times(2)).recoverLease(FILE);
     Mockito.verify(dfs, Mockito.times(1)).isFileClosed(FILE);
+  }
+
+  @Test
+  public void testCoerce() throws IOException {
+    Configuration conf = HBaseConfiguration.create();
+
+    Path srcPath = new Path("webhdfs://localhost/test");
+
+    Path desPath = new Path("/");
+    FileSystem desFs = desPath.getFileSystem(conf);
+
+    try {
+      FSHDFSUtils.coerce(srcPath, desFs);
+      fail();
+    } catch (RuntimeException e) {
+      // could verify message, but that makes this test fragile
+    }
+
+    desPath = new Path("hdfs://127.0.0.1:8030/");
+    desFs = desPath.getFileSystem(conf);
+    assertEquals(new Path("hdfs://127.0.0.1:8030/test"), FSHDFSUtils.coerce(srcPath, desFs));
+
+    conf.set("fs.defaultFS", "hdfs://haosong-hadoop");
+    conf.set("dfs.nameservices", "haosong-hadoop");
+    conf.set("dfs.ha.namenodes.haosong-hadoop", "nn1,nn2");
+    conf.set("dfs.client.failover.proxy.provider.haosong-hadoop",
+        "org.apache.hadoop.hdfs.server.namenode.ha.ConfiguredFailoverProxyProvider");
+    conf.set("dfs.namenode.rpc-address.haosong-hadoop.nn1", "127.0.0.1:8020");
+    conf.set("dfs.namenode.rpc-address.haosong-hadoop.nn2", "127.10.2.1:8000");
+    conf.set("dfs.namenode.http-address.haosong-hadoop.nn1", "http://127.0.0.1:50070");
+    conf.set("dfs.namenode.http-address.haosong-hadoop.nn2", "http://127.10.2.1:50070");
+    conf.set("dfs.namenode.https-address.haosong-hadoop.nn1", "http://127.0.0.1:50470");
+    conf.set("dfs.namenode.https-address.haosong-hadoop.nn2", "http://127.10.2.1:50470");
+    desPath = new Path("/");
+    desFs = desPath.getFileSystem(conf);
+    assertEquals(new Path("hdfs://haosong-hadoop/test"), FSHDFSUtils.coerce(srcPath, desFs));
+
+    srcPath = new Path("webhdfs://haosong-hadoop/test");
+    assertEquals(new Path("hdfs://haosong-hadoop/test"), FSHDFSUtils.coerce(srcPath, desFs));
+
+    srcPath = new Path("swebhdfs://haosong-hadoop/test");
+    assertEquals(new Path("hdfs://haosong-hadoop/test"), FSHDFSUtils.coerce(srcPath, desFs));
+  }
+
+  @Test
+  public void testIsCoercibleHdfs() throws IOException {
+    Configuration conf = HBaseConfiguration.create();
+
+    Path srcPath = new Path("webhdfs://localhost/test");
+    FileSystem srcFs = srcPath.getFileSystem(conf);
+    Path desPath = new Path("/");
+    FileSystem localFs = desPath.getFileSystem(conf);
+    assertTrue(!FSHDFSUtils.isCoercibleToHdfs(conf, srcFs, localFs));
+
+    desPath = new Path("hdfs://127.0.0.1/");
+    FileSystem hdfsFs = desPath.getFileSystem(conf);
+    assertTrue(FSHDFSUtils.isCoercibleToHdfs(conf, srcFs, hdfsFs));
+
+    desPath = new Path("hdfs://127.0.0.2/");
+    hdfsFs = desPath.getFileSystem(conf);
+    assertTrue(!FSHDFSUtils.isCoercibleToHdfs(conf, srcFs, hdfsFs));
+
+    conf.set("fs.defaultFS", "hdfs://haosong-hadoop");
+    conf.set("dfs.nameservices", "haosong-hadoop");
+    conf.set("dfs.ha.namenodes.haosong-hadoop", "nn1,nn2");
+    conf.set("dfs.client.failover.proxy.provider.haosong-hadoop",
+        "org.apache.hadoop.hdfs.server.namenode.ha.ConfiguredFailoverProxyProvider");
+    conf.set("dfs.namenode.rpc-address.haosong-hadoop.nn1", "127.0.0.1:8020");
+    conf.set("dfs.namenode.rpc-address.haosong-hadoop.nn2", "127.10.2.1:8000");
+    conf.set("dfs.namenode.http-address.haosong-hadoop.nn1", "http://127.0.0.1:50070");
+    conf.set("dfs.namenode.http-address.haosong-hadoop.nn2", "http://127.10.2.1:50070");
+    conf.set("dfs.namenode.https-address.haosong-hadoop.nn1", "http://127.0.0.1:50470");
+    conf.set("dfs.namenode.https-address.haosong-hadoop.nn2", "http://127.10.2.1:50470");
+    desPath = new Path("/");
+    FileSystem haHdfs = desPath.getFileSystem(conf);
+    assertTrue(FSHDFSUtils.isCoercibleToHdfs(conf, srcFs, haHdfs));
+
+    srcPath = new Path("webhdfs://127.10.2.1:50070/test");
+    srcFs = srcPath.getFileSystem(conf);
+    assertTrue(FSHDFSUtils.isCoercibleToHdfs(conf, srcFs, haHdfs));
+
+    srcPath = new Path("swebhdfs://haosong-hadoop/test");
+    srcFs = srcPath.getFileSystem(conf);
+    assertTrue(FSHDFSUtils.isCoercibleToHdfs(conf, srcFs, haHdfs));
   }
 
   @Test

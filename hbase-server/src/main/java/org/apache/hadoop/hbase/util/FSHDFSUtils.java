@@ -18,27 +18,31 @@
 
 package org.apache.hadoop.hbase.util;
 
+import static org.apache.hadoop.hbase.HConstants.HBASE_DIR;
+
+import com.google.common.collect.Sets;
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.InterruptedIOException;
 import java.lang.reflect.Method;
 import java.net.InetSocketAddress;
 import java.net.URI;
+import java.net.URISyntaxException;
+import java.util.Collection;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
-import java.util.Collection;
-
-import com.google.common.collect.Sets;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
-import org.apache.hadoop.hbase.classification.InterfaceAudience;
-import org.apache.hadoop.hbase.classification.InterfaceStability;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.hbase.classification.InterfaceAudience;
+import org.apache.hadoop.hbase.classification.InterfaceStability;
+import org.apache.hadoop.hdfs.DFSUtil;
 import org.apache.hadoop.hdfs.DistributedFileSystem;
 import org.apache.hadoop.hdfs.server.namenode.LeaseExpiredException;
+import org.apache.hadoop.hdfs.web.WebHdfsFileSystem;
 
 
 /**
@@ -129,6 +133,7 @@ public class FSHDFSUtils extends FSUtils {
       Collection<String> internalNameServices =
           conf.getTrimmedStringCollection("dfs.internal.nameservices");
       if (!internalNameServices.isEmpty()) {
+        // ha-hdfs:haosong-hadoop
         if (internalNameServices.contains(srcServiceName.split(":")[1])) {
           return true;
         } else {
@@ -148,6 +153,74 @@ public class FSHDFSUtils extends FSUtils {
     }
 
     return false;
+  }
+
+  /**
+   * Determines if srcFs is coercible to the desfs.
+   * @param conf the Configuration of HBase
+   * @param srcFs webhdfs
+   * @param desFs hdfs
+   * @return
+   */
+  public static boolean isCoercibleToHdfs(Configuration conf, FileSystem srcFs, FileSystem desFs) {
+    if (isSameHdfs(conf, srcFs, desFs)) {
+      return true;
+    }
+
+    if (srcFs instanceof WebHdfsFileSystem && desFs instanceof DistributedFileSystem) {
+      String srcServiceName = srcFs.getCanonicalServiceName();
+      String desServiceName = desFs.getCanonicalServiceName();
+
+      if (srcServiceName == null || desServiceName == null) {
+        return false;
+      }
+
+      // Only compare hostnames since the ports used by webhdfs and hdfs are different.
+      Set<String> webhdfsHostnames = new HashSet<>();
+      if (srcServiceName.startsWith("ha-webhdfs") || srcServiceName.startsWith("ha-swebhdfs")) {
+        Map<String, Map<String, InetSocketAddress>> haNnWebHdfsAddresses = DFSUtil
+            .getHaNnWebHdfsAddresses(conf, srcFs.getScheme());
+        webhdfsHostnames = haNnHostnames(haNnWebHdfsAddresses);
+      } else {
+        // 127.0.0.1:50070
+        webhdfsHostnames.add(srcServiceName.split(":")[0]);
+      }
+
+      Set<String> hdfsHostnames = new HashSet<>();
+      if (desServiceName.startsWith("ha-hdfs")) {
+        Map<String, Map<String, InetSocketAddress>> haNnRpcAddresses = DFSUtil
+            .getHaNnRpcAddresses(conf);
+        hdfsHostnames = haNnHostnames(haNnRpcAddresses);
+      } else {
+        hdfsHostnames.add(desServiceName.split(":")[0]);
+      }
+      return Sets.intersection(webhdfsHostnames, hdfsHostnames).size() > 0;
+    }
+    return false;
+  }
+
+  public static Path coerce(Path path, FileSystem fs) {
+    // Create a new Path without the scheme and authority since the FileSystem is changing.
+    URI uri = path.toUri();
+    try {
+      uri = new URI(null, null, uri.getPath(), uri.getQuery(), uri.getFragment());
+    } catch (URISyntaxException e) {
+      throw new IllegalArgumentException(e);
+    }
+    return fs.makeQualified(new Path(uri));
+  }
+
+  private static Set<String> haNnHostnames(
+      Map<String, Map<String, InetSocketAddress>> haNnAddresses) {
+    Set<String> hostnames = new HashSet<>();
+    for (Map.Entry<String, Map<String, InetSocketAddress>> entry : haNnAddresses.entrySet()) {
+      Map<String, InetSocketAddress> nnMap = entry.getValue();
+      for (Map.Entry<String, InetSocketAddress> e2 : nnMap.entrySet()) {
+        InetSocketAddress addr = e2.getValue();
+        hostnames.add(addr.getHostString());
+      }
+    }
+    return hostnames;
   }
 
   /**
